@@ -11,7 +11,7 @@ android {
 
     defaultConfig {
         applicationId = "com.patterniha.pattng"
-        minSdk = 29
+        minSdk = 28
         targetSdk = 37
         versionCode = 760
         versionName = (project.findProperty("pattngVersion") as? String)?.takeIf { it.isNotBlank() } ?: "2.4.0"
