@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.net.ConnectivityManager
+import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.system.OsConstants
 import androidx.core.content.ContextCompat
@@ -773,6 +774,9 @@ object CoreServiceManager {
         private val cm: ConnectivityManager? = context.getSystemService(ConnectivityManager::class.java)
 
         override fun findProcessByConnection(network: String, srcIP: String, srcPort: Long, destIP: String, destPort: Long): Long {
+            // getConnectionOwnerUid is API 29; on Android 9 (SDK 28) it does not exist and
+            // throws NoSuchMethodError (an Error, not Exception). Route-by-app is a no-op there.
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return -1L
             if (cm == null) return -1L
             val proto = when (network) {
                 "tcp" -> OsConstants.IPPROTO_TCP
@@ -795,7 +799,7 @@ object CoreServiceManager {
                 //LogUtil.d(AppConfig.TAG, "ProcessFinder: Find $network connection from $srcIP:$srcPort to $destIP:$destPort, uid=$uid,${PackageUidResolver.uidToPackageName(uid.toString())}")
 
                 uid
-            } catch (_: Exception) {
+            } catch (_: Throwable) {
                 -1L
             }
         }
