@@ -1,0 +1,203 @@
+name: Build APK (Android 9 / minSdk 28)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      RUST_TOOLCHAIN: "stable"
+      GO_VERSION: "1.26"
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v7
+      with:
+        submodules: 'recursive'
+        fetch-depth: '0'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v4
+      with:
+        log-accepted-android-sdk-licenses: false
+        cmdline-tools-version: '14742923'
+        packages: 'platforms;android-37.0 build-tools;37.0.0 platform-tools'
+
+    - name: Install NDK
+      run: |
+        echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+          --channel=0 \
+          --install "ndk;30.0.16248370"
+        echo "NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> $GITHUB_ENV
+        sed -i '10i\
+        \
+            ndkVersion = "30.0.16248370"' ${{ github.workspace }}/V2rayNG/app/build.gradle.kts
+
+    - name: Restore cached libhevtun
+      id: cache-libhevtun-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ github.workspace }}/libs
+        key: libhevtun-${{ runner.os }}-${{ env.NDK_HOME }}-${{ hashFiles('.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('compile-hevtun.sh') }}
+
+    - name: Build libhevtun
+      if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
+      run: |
+        bash compile-hevtun.sh
+
+    - name: Save libhevtun
+      if: steps.cache-libhevtun-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ github.workspace }}/libs
+        key: libhevtun-${{ runner.os }}-${{ env.NDK_HOME }}-${{ hashFiles('.git/modules/hev-socks5-tunnel/HEAD') }}-${{ hashFiles('compile-hevtun.sh') }}
+
+    - name: Install Rust
+      id: rust-toolchain
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ env.RUST_TOOLCHAIN }}
+        targets: aarch64-linux-android,armv7-linux-androideabi,x86_64-linux-android
+
+    - name: Restore cached libaether
+      id: cache-libaether-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ github.workspace }}/libs-aether
+        key: libaether-${{ runner.os }}-${{ env.NDK_HOME }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('.git/modules/aether/HEAD') }}-${{ hashFiles('compile-aether.sh') }}
+
+    - name: Build libaether
+      if: steps.cache-libaether-restore.outputs.cache-hit != 'true'
+      run: |
+        bash compile-aether.sh
+
+    - name: Save libaether
+      if: steps.cache-libaether-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ github.workspace }}/libs-aether
+        key: libaether-${{ runner.os }}-${{ env.NDK_HOME }}-${{ steps.rust-toolchain.outputs.cachekey }}-${{ hashFiles('.git/modules/aether/HEAD') }}-${{ hashFiles('compile-aether.sh') }}
+
+    - name: Install Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: ${{ env.GO_VERSION }}
+        cache: false
+
+    - name: Restore cached Psiphon client
+      id: cache-psiphon-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ github.workspace }}/libs-psiphon
+        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
+
+    - name: Build the Psiphon client
+      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
+      run: |
+        bash compile-psiphon.sh
+
+    - name: Save cached Psiphon client
+      if: steps.cache-psiphon-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ github.workspace }}/libs-psiphon
+        key: psiphon-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/psiphon-build.sh') }}-${{ hashFiles('compile-psiphon.sh') }}
+
+    - name: Restore cached pluggable transport
+      id: cache-pt-restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ${{ github.workspace }}/libs-pt
+        key: pt-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/pt-build.sh') }}-${{ hashFiles('compile-pt.sh') }}
+
+    - name: Build the pluggable transport
+      if: steps.cache-pt-restore.outputs.cache-hit != 'true'
+      run: |
+        bash compile-pt.sh
+
+    - name: Save cached pluggable transport
+      if: steps.cache-pt-restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ${{ github.workspace }}/libs-pt
+        key: pt-${{ runner.os }}-${{ env.GO_VERSION }}-${{ hashFiles('aether/pt-build.sh') }}-${{ hashFiles('compile-pt.sh') }}
+
+    - name: Stage the native libraries
+      run: |
+        cp -r ${{ github.workspace }}/libs ${{ github.workspace }}/V2rayNG/app
+        cp -r ${{ github.workspace }}/libs-aether/. ${{ github.workspace }}/V2rayNG/app/libs/
+        cp -r ${{ github.workspace }}/libs-psiphon/. ${{ github.workspace }}/V2rayNG/app/libs/
+        cp -r ${{ github.workspace }}/libs-pt/. ${{ github.workspace }}/V2rayNG/app/libs/
+
+    - name: Fetch the Psiphon server list
+      run: |
+        bash fetch-psiphon-servers.sh
+
+    - name: Fetch AndroidLibXrayLite tag
+      run: |
+        pushd AndroidLibXrayLite
+        CURRENT_TAG=$(git describe --tags --abbrev=0)
+        echo "Current tag in this repo: $CURRENT_TAG"
+        echo "CURRENT_TAG=$CURRENT_TAG" >> $GITHUB_ENV
+        popd
+
+    - name: Download libv2ray
+      uses: robinraju/release-downloader@v1.13
+      with:
+        repository: 'patterniha/AndroidLibXrayLite'
+        tag: ${{ env.CURRENT_TAG }}
+        fileName: 'libv2ray.aar'
+        out-file-path: V2rayNG/app/libs/
+
+    - name: Setup Java
+      uses: actions/setup-java@v6.2.0
+      with:
+        distribution: 'temurin'
+        java-version: '21'
+
+    - name: Patch minSdk to 28 and disable app update checks
+      run: |
+        cd ${{ github.workspace }}/V2rayNG
+        sed -i 's/minSdk = 29/minSdk = 28/' app/build.gradle.kts
+        grep -n 'minSdk' app/build.gradle.kts
+
+    - name: Ensure versionCode of P73 armeabi-v7a is higher than P57
+      run: |
+        cd ${{ github.workspace }}/V2rayNG
+        # P57 versionCode for armeabi-v7a fdroid: 100*757? + 2 + 5,000,000 -> ~5,075,702.
+        # P73 variant code: 100*760 + 2 + 5,000,000 = 5,076,002 (higher). playstore: 4,000,760.
+        echo "version codes already overridden in build.gradle.kts; no change needed"
+
+    - name: Build APK
+      run: |
+        cd ${{ github.workspace }}/V2rayNG
+        echo "sdk.dir=${ANDROID_HOME}" > local.properties
+        chmod 755 gradlew
+        ./gradlew :app:testPlaystoreDebugUnitTest
+        # Build unsigned release APKs with a dummy keystore so assembleRelease passes.
+        # Android Gradle Plugin requires signing config to produce release variant, so supply one via -P flags.
+        keytool -genkeypair -v -keystore /tmp/dummy.jks -storepass android -keypass android -alias dummy -keyalg RSA -keysize 2048 -validity 10000 \
+          -dname "CN=Android9Build, OU=NA, O=NA, L=NA, ST=NA, C=US" >/dev/null 2>&1
+        ./gradlew assembleRelease -PpattngVersion="2.4.0-P73-android9" \
+          -Pandroid.injected.signing.store.file=/tmp/dummy.jks \
+          -Pandroid.injected.signing.store.password=android \
+          -Pandroid.injected.signing.key.alias=dummy \
+          -Pandroid.injected.signing.key.password=android
+
+    - name: Check native libraries
+      run: |
+        for apk in ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*.apk; do
+          echo "$(basename "$apk"):"
+          unzip -Z1 "$apk" | grep '^lib/armeabi-v7a/' || true
+        done
+
+    - name: Upload armeabi-v7a APK
+      uses: actions/upload-artifact@v7
+      if: ${{ success() }}
+      with:
+        name: armeabi-v7a-android9
+        path: ${{ github.workspace }}/V2rayNG/app/build/outputs/apk/*/release/*armeabi-v7a*.apk
